@@ -6,7 +6,12 @@
 % than this, defaults to the shorter time.
 total_time = 90;
 
-%% read files and assemble into array
+% Bin size for velocity calculations (in seconds). Velocity is calculated
+% once per "bin size" by comparing positions at the start and end. Cannot
+% be lower than the rate of data being analyzed (generally 0.5-1s).
+binSize = 4;
+
+%% get file list
 
 [file_name, pathname] = uigetfile({'*.csv;*', ...
     'Comma-separated values (*.csv)'}, ...
@@ -23,14 +28,18 @@ end
 num_files = size(file_list,2);
 disp(strcat(num2str(num_files), ' files selected for analysis.'));
 
-% calculate mean velocity per second for each replicate
+% recalculate total time to total # of bins
+total_time = floor(total_time / binSize);
+
+%% calculate mean velocity per second for each replicate
+
 seconds = floor(total_time);
-meanVel = zeros(seconds,num_files);
+meanVel = zeros(seconds, num_files);
 meanVel(:) = NaN;
 larvaNum = 1;
 for index = 1:num_files
     %load file
-    disp(file_list(index));
+    disp(cleanLabels(file_list(index)));
     replicate = csvread(char(file_list(index)));
     num_rows = size(replicate,1);
     
@@ -43,17 +52,26 @@ for index = 1:num_files
     end
     
     % calc velocities
-    dataRate = round(1/replicate(2,1));
-    velocity = zeros(seconds,1);
+    dataRate = round(1 / replicate(2, 1)) * binSize;
+    if (dataRate < 1)
+        mexception = MException('larva_velocity:BadParam', ... 
+            'Error: binSize is smaller than minimum data rate.');
+        throw(mexception);
+    end
+    velocity = zeros(seconds, 1);
     velocity(:) = NaN;
-    for animal = 1:2:(size(replicate,2)-1)
+    for animal = 1:2:(size(replicate, 2) - 1)
         % calculate velocity/s for each animal
-        for row = 1:dataRate:(size(replicate,1)-dataRate)
+        for row = 1:dataRate:(size(replicate, 1) - dataRate)
             % the '10 * ' converts to mm/s (coordinates are in cm)
             velocity(floor(row/dataRate)+1) = 10 * pdist2( ...
                 [replicate(row,animal+1), replicate(row,animal+2)], ...
                 [replicate(row+dataRate,animal+1), replicate(row+dataRate,animal+2)]);
         end
+        % convert from mm/bin to mm/s
+        velocity = velocity / binSize;
+        
+        % ensure that number of values and total size of array is the same
         if (length(velocity) > total_time)
             meanVel(:,larvaNum) = velocity(1:total_time);
         else
@@ -78,23 +96,32 @@ for col = 1:size(meanVel,2)
         lastIdx(col) = NaN;
     end
 end
-meanVel = meanVel(1:max(lastIdx),:);
+meanVel = meanVel(1:max(lastIdx), :);
+
+% create a first column of timepoint labels
+plotData = horzcat((0:binSize:(size(meanVel,1) - 1) * binSize)', meanVel);
 
 %% plot data
 
 figure('Name','Larva velocity');
-plot(meanVel, 'linew', 1.5, 'LineSmoothing','on');
-axis([0 size(meanVel,1)+5 0 max(meanVel(:)*1.5)])
+colormap = jet(size(meanVel, 2));
+hold on;
+for col = 2:size(plotData, 2)
+    plot(plotData(:, 1), plotData(:, col), ...
+        'linew', 1.5, 'LineSmoothing', 'on', 'color', colormap(col - 1, :));
+end
+hold off;
+axis([0 (plotData(end, 1) + binSize) 0 (max(max(meanVel)) * 1.5)])
 xlabel('Time (s)', 'fontsize', 11);
-ylabel('Velocity (mm/s)', 'fontsize', 11);
+ylabel('Average velocity (mm/s)', 'fontsize', 11);
 
-legend(file_name, 'location', 'NorthWest');
+legend(cleanLabels(file_list), 'location', 'NorthWest');
 
 %% write data to disk
 
 [output_name,path] = uiputfile('.csv');
 if output_name ~= 0  % in case someone closes the file saving dialog
-    csvwrite(strcat(path,output_name), meanVel);
+    csvwrite(strcat(path,output_name), plotData);
 else
     disp('File saving cancelled.')
 end
